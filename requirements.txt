@@ -1,0 +1,6 @@
+wandb==0.18.1
+fastapi==0.115.0
+torch==2.4.1
+python-dotenv==1.0.1
+opencv-python>=4.5.5.64
+mediapipe>=0.8.9.1
