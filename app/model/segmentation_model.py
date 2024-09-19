@@ -1,9 +1,9 @@
 import torch
 import torch.nn as nn
 
-from audio_feature_extractor import AudioFeatureExtractor
-from temporal_conv_net import TemporalConvNet
-from visual_feature_extractor import VisualFeatureExtractor
+from .audio_feature_extractor import AudioFeatureExtractor
+from .temporal_conv_net import TemporalConvNet
+from .visual_feature_extractor import VisualFeatureExtractor
 
 
 class SegmentationModel(nn.Module):

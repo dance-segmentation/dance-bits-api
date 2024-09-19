@@ -1,7 +1,7 @@
 import os
 import wandb
 import torch
-from segmentation_model import SegmentationModel
+from .segmentation_model import SegmentationModel
 from dotenv import load_dotenv
 
 load_dotenv()
