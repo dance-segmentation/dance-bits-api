@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from moviepy.editor import VideoFileClip
 from contextlib import asynccontextmanager
 from .model.loader import load_model
+import matplotlib.pyplot as plt
 
 
 class PredictionResult(BaseModel):
@@ -35,7 +36,7 @@ app = FastAPI(lifespan=lifespan)
 
 
 @app.post("/predict/", response_model=PredictionResult)
-async def predict(video: UploadFile = File(...)):
+async def predict(video: UploadFile = File(...), min_segmentation_prob: float = 0.5):
     if video.content_type not in ["video/mp4", "video/avi", "video/mov"]:
         raise HTTPException(status_code=400, detail="Invalid video format")
 
@@ -46,8 +47,8 @@ async def predict(video: UploadFile = File(...)):
             tmp_video_path = tmp_video.name
 
         # Process the video and perform inference
-        segmentation_probs = await process_video_and_predict(tmp_video_path)
-        segmented_frames = postprocess_predictions(segmentation_probs, 0.01)
+        segmented_frames = await process_video_and_predict(tmp_video_path, min_segmentation_prob)
+
         return PredictionResult(segmented_frames=segmented_frames)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -56,10 +57,7 @@ async def predict(video: UploadFile = File(...)):
         os.unlink(tmp_video_path)
 
 
-async def process_video_and_predict(video_path: str):
-    # Load the model from the global ml_models variable
-    model = ml_models.get("segmentation_model")
-
+async def process_video_and_predict(video_path: str, min_segmentation_prob: float = 0.5):
     # Extract frames from the video
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -73,14 +71,10 @@ async def process_video_and_predict(video_path: str):
         frames.append(frame)
     cap.release()
 
-    # Preprocess frames for the model
-    bone_vectors = preprocess_video(frames)
-
-    video = VideoFileClip(video_path)
-    audio_path = video_path.replace(".mp4", "_audio.wav")
-    video.audio.write_audiofile(audio_path)
-    video.close()
-    spectrogram = generate_normalized_mel_spectrogram(audio_path)
+    # Extract visual input (bone vectors)
+    bone_vectors = extract_visual_input(frames)
+    # Extract audio input (mel spectrogram)
+    spectrogram = extract_audio_input(video_path)
 
     # Convert to PyTorch tensors
     bone_vectors = torch.tensor(bone_vectors, dtype=torch.float32)
@@ -94,19 +88,29 @@ async def process_video_and_predict(video_path: str):
     predictions = await run_inference(bone_vectors, spectrogram)
 
     # Post-process predictions
-    # segmented_frames = postprocess_predictions(predictions)
+    segmented_frames = postprocess_predictions(
+        predictions, len(frames), min_segmentation_prob)
 
-    return predictions
+    return segmented_frames
 
 
-def preprocess_video(frames):
-    # Extract bone vectors and mel spectrograms from frames
+def extract_audio_input(video_path):
+    video = VideoFileClip(video_path)
+    audio_path = video_path.replace(".mp4", "_audio.wav")
+    video.audio.write_audiofile(audio_path)
+    video.close()
+    spectrogram = generate_normalized_mel_spectrogram(audio_path)
+    return spectrogram
+
+
+def extract_visual_input(frames):
+    # Extract bone vectors from frames
     mp_pose = mp.solutions.pose
     pose = mp_pose.Pose(static_image_mode=False,
                         min_detection_confidence=0.5,
                         min_tracking_confidence=0.5)
 
-    max_frames = 3600
+    max_frames = 5400
     video_bone_vectors = np.zeros(
         (max_frames, 35*2))  # 35 bones * 2 coordinates
     # Prepare CSV file and write header
@@ -211,17 +215,20 @@ def generate_normalized_mel_spectrogram(audio_path):
         0.5  # Shape (n_mels, T)
     spectrogram_dB_normalized = spectrogram_dB_normalized.transpose()  # Shape (T, n_mels)
 
-    max_frames = 3600
+    max_frames = 5400
     spectrogram_dB_normalized = pad_or_truncate(
         spectrogram_dB_normalized, max_frames)
 
     return spectrogram_dB_normalized
 
 
-def postprocess_predictions(segmentation_probs, min_segmentation_prob=0.5):
+def postprocess_predictions(segmentation_probs, num_frames, min_segmentation_prob=0.5):
+    segmentation_probs = segmentation_probs[:num_frames]
     # Return frame ids which have a segmentation probability greater than 0.5
     segmented_frames = np.argwhere(
         segmentation_probs >= min_segmentation_prob).flatten().tolist()
+    plt.plot(segmentation_probs)
+    plt.show()
     return segmented_frames
 
 
