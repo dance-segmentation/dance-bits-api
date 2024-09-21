@@ -17,18 +17,26 @@ def cosine_similarity(vec1, vec2):
     
     return similarity
 
-# Example usage:
-# Suppose you have two bone vectors
-bone_vector1 = [1, 2, 3]
-bone_vector2 = [4, 5, 6]
+def average_cosine_similarity(list1, list2):
+    # Ensure both lists have the same length
+    if len(list1) != len(list2):
+        raise ValueError("The two lists must have the same number of vectors.")
+    
+    # Initialize a variable to store the sum of similarities
+    total_similarity = 0
+    
+    # Loop over the vectors in both lists
+    for vec1, vec2 in zip(list1, list2):
+        total_similarity += cosine_similarity(vec1, vec2)
+    
+    # Calculate the average similarity
+    average_similarity = total_similarity / len(list1)
+    
+    return average_similarity
 
-cos_sim = cosine_similarity(bone_vector1, bone_vector2)
-print("Cosine Similarity:", cos_sim)
 
 #TODO 
-# implement similary_score function that takes two lists of bone vectors and returns the similarity score
 # find a best aproach to compare the similarity of two lists of bone vectors
-# implement a function that takes a list of bone vectors and returns the average bone vector
 # implement a spatial alignment
 # implement a temporal alignment
 # implement temporal and spatial tolerance
