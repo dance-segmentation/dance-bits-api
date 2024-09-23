@@ -1,7 +1,7 @@
 import tempfile
 import os
 import cv2
-import asyncio
+# import asyncio
 import torch
 import librosa
 import numpy as np
@@ -13,6 +13,7 @@ from moviepy.editor import VideoFileClip
 from contextlib import asynccontextmanager
 from .model.loader import load_model
 import matplotlib.pyplot as plt
+from fastapi.middleware.cors import CORSMiddleware
 
 
 class PredictionResult(BaseModel):
@@ -33,6 +34,15 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+# Allow all origins (you can specify certain domains if you want)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
 
 
 @app.post("/predict/", response_model=PredictionResult)
@@ -222,14 +232,55 @@ def generate_normalized_mel_spectrogram(audio_path):
     return spectrogram_dB_normalized
 
 
-def postprocess_predictions(segmentation_probs, num_frames, min_segmentation_prob=0.5):
+def postprocess_predictions(segmentation_probs, num_frames, max_frames=5400, min_segmentation_prob=0.3, window_size=20):
+    """
+    Post-process the model predictions to get the segmented frames.
+    Outputs the segmented frames given probabilities for each frame by finding the frame with the maximum probability
+      exceeding a threshold h in a window of size w.
+
+    segmentation_probs: (Array[float]) The probability per frame. Shape (nr_frames, 1).
+    num_frames: (int) The number of frames in the video.
+    max_frames: (int) The maximum number of frames the video was padded or truncated to.
+    min_segmentation_prob: (float) The probability threshold to consider a potential segmentation point.
+    window_size: (int) The size of the window to calculate a probability maximum in number of frames.
+    """
+
+    # Remove padding
+    num_frames = min(num_frames, max_frames)
     segmentation_probs = segmentation_probs[:num_frames]
-    # Return frame ids which have a segmentation probability greater than 0.5
-    segmented_frames = np.argwhere(
-        segmentation_probs >= min_segmentation_prob).flatten().tolist()
-    plt.plot(segmentation_probs)
-    plt.show()
-    return segmented_frames
+
+    frame_indices = []
+
+    for i, label in enumerate(segmentation_probs):
+
+        if label > min_segmentation_prob:
+            # Find the lower and upper limits of the index range
+            # for the boundary cases.
+            low_lim = max(0, i - int(window_size / 2))
+            up_lim = min(i + int(window_size / 2), len(segmentation_probs) - 1)
+
+            # Create the index window for finding the probability maximum.
+            index_window = list(range(low_lim, up_lim + 1))
+
+            # Remove
+            for index in index_window:
+                if index in frame_indices:
+                    frame_indices.remove(index)
+
+            # Find the index of the maximum probability in the index window.
+            max_prob_index = np.argmax(segmentation_probs[index_window])
+            max_prob = np.max(segmentation_probs[index_window])
+
+            # Map the index in the local range to the global index.
+            label_index = low_lim + max_prob_index
+
+            # Check that the max probability locally and the one with
+            # the mapped index are identical.
+            assert max_prob, segmentation_probs[label_index]
+
+            frame_indices.append(label_index)
+
+    return frame_indices
 
 
 async def run_inference(bone_vectors, spectrogram):

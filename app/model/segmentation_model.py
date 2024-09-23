@@ -19,7 +19,6 @@ class SegmentationModel(nn.Module):
         self.tcn = TemporalConvNet(combined_input_size, tcn_channels)
         # Output layer. Returns one value per frame
         self.fc_out = nn.Linear(tcn_channels[-1], 1)
-        self.sigmoid = nn.Sigmoid()  # Binary classification for segmentation point
 
     def forward(self, visual_input, audio_input):
         # Extract visual features of shape (batch_size, num_frames, num_bone_vectors). num_bone_vectors = 35
@@ -32,4 +31,4 @@ class SegmentationModel(nn.Module):
         tcn_out = self.tcn(combined_features)
         # Final output layer to get shape (batch_size, num_frames, 1)
         out = self.fc_out(tcn_out)
-        return self.sigmoid(out)  # Segmentation probability
+        return out
