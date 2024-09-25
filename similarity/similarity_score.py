@@ -1,90 +1,86 @@
 import numpy as np
-import cv2
 
+# Function to prepare (reshape) bone vectors from data
+def prepare_vectors(data, frames):
+    # Copy and reshape the bone_vectors from the data
+    vector_pairs = data['bone_vectors'].copy()
+    reshaped_vectors = vector_pairs.reshape(frames, 35, 2)  # Assuming 35 bones and 2D vectors
+    return reshaped_vectors
+
+# Function to downsample vectors by a given factor
+def downsample_vectors(vectors, factor):
+    return vectors[::factor]  # Downsample by taking every 'factor'-th frame
+
+# Function to align vectors by removing 'drop_frames' from the beginning and end
+def align_vectors(vectors, drop_frames):
+    return vectors[drop_frames:-drop_frames, :, :]  # Remove 'drop_frames' from both sides
+
+# Function to process both Cristina's and teaching data
+def process_data(cristina_data, teaching_data, downsample_factor=2, drop_frames=21):
+    # Step 1: Prepare vectors (reshape)
+    vectors_cristina = prepare_vectors(cristina_data, 1004)  # 1004 frames for Cristina's data
+    vectors_teaching = prepare_vectors(teaching_data, 1921)  # 1921 frames for teaching data
+
+    # Step 2: Downsample teaching vectors
+    vectors_teaching_downsample = downsample_vectors(vectors_teaching, downsample_factor)
+
+    # Step 3: Align Cristina's sets of vectors (drop frames)
+    vectors_cristina_aligned = align_vectors(vectors_cristina, drop_frames)
+    
+    return vectors_cristina_aligned, vectors_teaching_downsample
+
+# Cosine similarity function between two vectors
 def cosine_similarity(vec1, vec2):
     # Ensure the vectors are numpy arrays
     vec1 = np.array(vec1)
     vec2 = np.array(vec2)
-    
+
     # Compute the dot product
     dot_product = np.dot(vec1, vec2)
-    
+
     # Compute the magnitudes (norms) of the vectors
     norm_vec1 = np.linalg.norm(vec1)
     norm_vec2 = np.linalg.norm(vec2)
-    
+
     # Compute the cosine similarity
     similarity = dot_product / (norm_vec1 * norm_vec2)
-    
+
     return similarity
 
-def average_cosine_similarity(list1, list2):
-    # Ensure both lists have the same length
-    if len(list1) != len(list2):
-        raise ValueError("The two lists must have the same number of vectors.")
-    
-    # Initialize a variable to store the sum of similarities
-    total_similarity = 0
-    
-    # Loop over the vectors in both lists
-    for vec1, vec2 in zip(list1, list2):
-        total_similarity += cosine_similarity(vec1, vec2)
-    
-    # Calculate the average similarity
-    average_similarity = total_similarity / len(list1)
-    
-    return average_similarity
-
-# Function to apply the cosine similarity computation across all frames of the video
+# Function to compute cosine similarities across all frames
 def compute_similarity_for_all_frames(bone_vectors_uploaded, bone_vectors_teaching):
     # Ensure both videos have the same number of frames
     if len(bone_vectors_uploaded) != len(bone_vectors_teaching):
         raise ValueError("The two videos must have the same number of frames.")
     
-    frame_similarities = []
-    
-    # Loop through each frame and compute the average similarity for the frame
+    # List to store cosine similarities for all vectors across all frames
+    all_similarities = []
+
+    # Loop through each frame
     for frame_idx in range(len(bone_vectors_uploaded)):
         uploaded_frame = bone_vectors_uploaded[frame_idx]
         teaching_frame = bone_vectors_teaching[frame_idx]
-        
-        # Compute average cosine similarity for the frame
-        frame_similarity = average_cosine_similarity(uploaded_frame, teaching_frame)
-        frame_similarities.append(frame_similarity)
-    
-    # Compute the overall average similarity across all frames
-    overall_similarity = np.mean(frame_similarities)
-    
-    return frame_similarities, overall_similarity
 
-def get_fps(video_path1, video_path2):
-    # Open the first video file
-    video1 = cv2.VideoCapture(video_path1)
-    if not video1.isOpened():
-        raise ValueError(f"Could not open video file: {video_path1}")
-    
-    # Open the second video file
-    video2 = cv2.VideoCapture(video_path2)
-    if not video2.isOpened():
-        raise ValueError(f"Could not open video file: {video_path2}")
-    
-    # Get the fps of each video
-    fps1 = video1.get(cv2.CAP_PROP_FPS)
-    fps2 = video2.get(cv2.CAP_PROP_FPS)
-    
-    # Release the video files
-    video1.release()
-    video2.release()
-    
-    return fps1, fps2
+        # Loop through each vector in the frame and compute similarity
+        for vec1, vec2 in zip(uploaded_frame, teaching_frame):
+            similarity = cosine_similarity(vec1, vec2)
+            all_similarities.append(similarity)  # Add similarity to the list
+
+    # Calculate the average similarity across all frames and vectors
+    average_similarity = np.mean(all_similarities)
+
+    return average_similarity
 
 
 
 
-#TODO 
-# based on the ratio of two fps values, downsample the list (with bone vectors) with higher fps
 
-# find a best aproach to compare the similarity of two lists of bone vectors
-# implement a spatial alignment
-# implement a temporal alignment
-# implement temporal and spatial tolerance
+
+    
+
+
+
+
+
+
+
