@@ -11,6 +11,8 @@ from fastapi import File, UploadFile, FastAPI, HTTPException
 from pydantic import BaseModel
 from moviepy.editor import VideoFileClip
 from contextlib import asynccontextmanager
+
+from app.similarity.similarity_score import compute_similarity_for_all_frames, process_data
 from .model.loader import load_model
 import matplotlib.pyplot as plt
 from fastapi.middleware.cors import CORSMiddleware
@@ -67,19 +69,53 @@ async def predict(video: UploadFile = File(...), min_segmentation_prob: float = 
         os.unlink(tmp_video_path)
 
 
+@app.post("/compare")
+async def compare_videos(user_video: UploadFile = File(...), teacher_video: UploadFile = File(...)):
+    # Save the uploaded videos to temporary files
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_user_video:
+            tmp_user_video.write(await user_video.read())
+            tmp_user_video_path = tmp_user_video.name
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_teacher_video:
+            tmp_teacher_video.write(await teacher_video.read())
+            tmp_teacher_video_path = tmp_teacher_video.name
+
+        # Process the videos and perform comparison
+        similarity_score = await process_videos_and_compare(tmp_user_video_path, tmp_teacher_video_path)
+
+        return {"similarity_score": similarity_score}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # Clean up the temporary video files
+        os.unlink(tmp_user_video_path)
+        os.unlink(tmp_teacher_video_path)
+
+
+async def process_videos_and_compare(user_video_path: str, teacher_video_path: str):
+    # Extract frames from the videos
+    user_frames, user_fps = get_video_frames(user_video_path)
+    teacher_frames, teacher_fps = get_video_frames(teacher_video_path)
+
+    # Extract visual input (bone vectors)
+    user_bone_vectors = extract_visual_input(user_frames, False)
+    teacher_bone_vectors = extract_visual_input(teacher_frames, False)
+
+    # Process the data
+    user_bone_vectors, teacher_bone_vectors = process_data(
+        user_bone_vectors, teacher_bone_vectors, user_fps, teacher_fps)
+
+    # Compute similarity score
+    similarity_score = compute_similarity_for_all_frames(
+        user_bone_vectors, teacher_bone_vectors)
+
+    return similarity_score
+
+
 async def process_video_and_predict(video_path: str, min_segmentation_prob: float = 0.5):
     # Extract frames from the video
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise IOError(f"Error opening video file: {video_path}")
-
-    frames = []
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        frames.append(frame)
-    cap.release()
+    frames, _ = get_video_frames(video_path)
 
     # Extract visual input (bone vectors)
     bone_vectors = extract_visual_input(frames)
@@ -104,6 +140,23 @@ async def process_video_and_predict(video_path: str, min_segmentation_prob: floa
     return segmented_frames
 
 
+def get_video_frames(video_path):
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise IOError(f"Error opening video file: {video_path}")
+    # Get FPS
+    fps = cap.get(cv2.CAP_PROP_FPS)
+
+    frames = []
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frames.append(frame)
+    cap.release()
+    return frames, fps
+
+
 def extract_audio_input(video_path):
     video = VideoFileClip(video_path)
     audio_path = video_path.replace(".mp4", "_audio.wav")
@@ -113,17 +166,29 @@ def extract_audio_input(video_path):
     return spectrogram
 
 
-def extract_visual_input(frames):
-    # Extract bone vectors from frames
+def extract_visual_input(frames, fixed_len=True):
+    """
+    Extract visual input (bone vectors) from video frames using MediaPipe Pose.
+
+    Args:
+    frames (list): List of video frames.
+    fixed_len (bool): If True, pad or truncate the bone vectors to a fixed length of max_frames.
+
+    Returns:
+    numpy.ndarray: Array of bone vectors. Shape: (max_frames or len(frames), 35*2) where 35 is the number of bones and 2 is the number of coordinates (x, y).
+    """
     mp_pose = mp.solutions.pose
     pose = mp_pose.Pose(static_image_mode=False,
                         min_detection_confidence=0.5,
                         min_tracking_confidence=0.5)
 
     max_frames = 5400
-    video_bone_vectors = np.zeros(
-        (max_frames, 35*2))  # 35 bones * 2 coordinates
-    # Prepare CSV file and write header
+    if fixed_len:
+        video_bone_vectors = np.zeros(
+            (max_frames, 35*2))  # 35 bones * 2 coordinates
+    else:
+        video_bone_vectors = np.zeros(
+            (len(frames), 35*2))  # 35 bones * 2 coordinates
 
     # Process video frames
     for index, frame in tqdm(enumerate(frames)):
