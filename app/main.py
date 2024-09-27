@@ -11,6 +11,7 @@ from fastapi import File, UploadFile, FastAPI, HTTPException
 from pydantic import BaseModel
 from moviepy.editor import VideoFileClip
 from contextlib import asynccontextmanager
+from typing import List
 
 from app.similarity.similarity_score import compute_similarity_for_all_frames, process_data
 from .model.loader import load_model
@@ -19,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 
 class PredictionResult(BaseModel):
-    segmented_frames: list  # List of frame numbers that have been segmented by the model
+    segmented_frames: List  # List of frame numbers that have been segmented by the model
 
 
 ml_models = {}
@@ -60,6 +61,9 @@ async def predict(video: UploadFile = File(...), min_segmentation_prob: float = 
 
         # Process the video and perform inference
         segmented_frames = await process_video_and_predict(tmp_video_path, min_segmentation_prob)
+
+        segmented_frames = [int(frame_index) if isinstance(
+            frame_index, np.int64) else frame_index for frame_index in segmented_frames]
 
         return PredictionResult(segmented_frames=segmented_frames)
     except Exception as e:
@@ -135,7 +139,7 @@ async def process_video_and_predict(video_path: str, min_segmentation_prob: floa
 
     # Post-process predictions
     segmented_frames = postprocess_predictions(
-        predictions, len(frames), min_segmentation_prob)
+        segmentation_probs=predictions, num_frames=len(frames), min_segmentation_prob=min_segmentation_prob)
 
     return segmented_frames
 
