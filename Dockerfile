@@ -25,5 +25,4 @@ ENV WANDB_MODEL_NAME=""
 ENV WANDB_MODEL_VERSION=""
 
 # Command to run the application
-# CMD ["fastapi", "run", "app/main.py", "--port", "8080"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
