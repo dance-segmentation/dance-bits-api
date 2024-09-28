@@ -20,7 +20,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 
 class PredictionResult(BaseModel):
-    segmented_frames: List  # List of frame numbers that have been segmented by the model
+    segmented_probs: List  # List of model output, i.e. probability of segmentation per frame.
+    segmented_percentages: List # List of final segments in percentage form.
 
 
 ml_models = {}
@@ -60,12 +61,12 @@ async def predict(video: UploadFile = File(...), min_segmentation_prob: float = 
             tmp_video_path = tmp_video.name
 
         # Process the video and perform inference
-        segmented_frames = await process_video_and_predict(tmp_video_path, min_segmentation_prob)
+        segmented_probs, segmented_percentages = await process_video_and_predict(tmp_video_path, min_segmentation_prob)
 
-        segmented_frames = [int(frame_index) if isinstance(
-            frame_index, np.int64) else frame_index for frame_index in segmented_frames]
+        #segmented_frames = [int(frame_index) if isinstance(
+        #    frame_index, np.int64) else frame_index for frame_index in segmented_frames]
 
-        return PredictionResult(segmented_frames=segmented_frames)
+        return PredictionResult(segmented_probs=segmented_probs, segmented_percentages=segmented_percentages)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
@@ -119,12 +120,12 @@ async def process_videos_and_compare(user_video_path: str, teacher_video_path: s
 
 async def process_video_and_predict(video_path: str, min_segmentation_prob: float = 0.5):
     # Extract frames from the video
-    frames, _ = get_video_frames(video_path)
+    frames, fps = get_video_frames(video_path)
 
     # Extract visual input (bone vectors)
     bone_vectors = extract_visual_input(frames)
     # Extract audio input (mel spectrogram)
-    spectrogram = extract_audio_input(video_path)
+    spectrogram, seconds_per_beat = extract_audio_input(video_path)
 
     # Convert to PyTorch tensors
     bone_vectors = torch.tensor(bone_vectors, dtype=torch.float32)
@@ -138,10 +139,14 @@ async def process_video_and_predict(video_path: str, min_segmentation_prob: floa
     predictions = await run_inference(bone_vectors, spectrogram)
 
     # Post-process predictions
-    segmented_frames = postprocess_predictions(
-        segmentation_probs=predictions, num_frames=len(frames), min_segmentation_prob=min_segmentation_prob)
+    # Get the number of frames that 1 beat takes.
+    frames2beat = seconds_per_beat * fps
 
-    return segmented_frames
+    segmentation_probs, segments_percentages  = postprocess_predictions(
+        segmentation_probs=predictions, num_frames=len(frames), frames2beat=frames2beat,
+          min_segmentation_prob=min_segmentation_prob)
+
+    return segmentation_probs, segments_percentages 
 
 
 def get_video_frames(video_path):
@@ -277,6 +282,12 @@ def generate_normalized_mel_spectrogram(audio_path):
     """
 
     y, sr = librosa.load(audio_path, sr=None)
+
+    # Extracting the tempo of the audio in nr of beats per minute
+    tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+    # Getting the number of seconds that 1 beat takes.
+    seconds_per_beat = 60 / tempo[0]
+
     spectrogram = librosa.feature.melspectrogram(
         y=y, sr=sr, n_mels=81, n_fft=2048)
     spectrogram_dB = librosa.power_to_db(spectrogram, ref=np.max)
@@ -298,10 +309,11 @@ def generate_normalized_mel_spectrogram(audio_path):
     spectrogram_dB_normalized = pad_or_truncate(
         spectrogram_dB_normalized, max_frames)
 
-    return spectrogram_dB_normalized
+    return spectrogram_dB_normalized, seconds_per_beat
 
 
-def postprocess_predictions(segmentation_probs, num_frames, max_frames=5400, min_segmentation_prob=0.3, window_size=20):
+def postprocess_predictions(segmentation_probs, num_frames, frames2beat, max_frames=5400,
+                             min_segmentation_prob=0.3, window_size=20, smoothing_factor=2):
     """
     Post-process the model predictions to get the segmented frames.
     Outputs the segmented frames given probabilities for each frame by finding the frame with the maximum probability
@@ -313,43 +325,72 @@ def postprocess_predictions(segmentation_probs, num_frames, max_frames=5400, min
     min_segmentation_prob: (float) The probability threshold to consider a potential segmentation point.
     window_size: (int) The size of the window to calculate a probability maximum in number of frames.
     """
-
-    # Remove padding
+    # 0. Ground number of frames to maximum allowed and remove padding.
     num_frames = min(num_frames, max_frames)
     segmentation_probs = segmentation_probs[:num_frames]
 
-    frame_indices = []
+    # 1. Initialise parameters for establishing segments, ideally as buttons for the user.
+    window_size=int(frames2beat)*10
+    min_segmentation_prob=np.average(segmentation_probs)
 
-    for i, label in enumerate(segmentation_probs):
+    # 2. Apply smoothing as rolling average over frames2beat/factor last frames.
+    def moving_average(data_set, periods=3):
+        weights = np.ones(periods) / periods
+        return np.convolve(data_set, weights, mode='valid')
+    
+    if smoothing_factor>0.0:
+        periods = int(int(frames2beat)/int(smoothing_factor))
+        segmentation_probs = moving_average(data_set=segmentation_probs, periods=periods)
 
-        if label > min_segmentation_prob:
-            # Find the lower and upper limits of the index range
-            # for the boundary cases.
-            low_lim = max(0, i - int(window_size / 2))
-            up_lim = min(i + int(window_size / 2), len(segmentation_probs) - 1)
+    # 3. Apply the splitting formula
+    def pick_frames(labels, h, w):
+        """
+        Outputs the segmentation frames from array of probabilities for each frame.
 
-            # Create the index window for finding the probability maximum.
-            index_window = list(range(low_lim, up_lim + 1))
+        labels: (Array[float]) The probability per frame in array pf dim = (nr_frames, 1).
+        h: (float) The probability threshold to consider a potential segmentation point.
+        w: (int) The size of the window to calculate a probability maximum in number of frames. 
+        """
+    
+        frame_indexes = []
+        for i, label in enumerate(labels):
+        
+            if label>h:
+                # Find the lower and upper limits of the index range
+                # for the boundary cases.
+                low_lim = max(0, i-int(w/2))
+                up_lim = min(i+int(w/2), len(labels))
+            
+                # Create the index window for finding the probability maximum.
+                index_window = [index for index in list(range(low_lim,up_lim))]
+                
+                # Remove 
+                for index in index_window:
+                    if index in frame_indexes:
+                        frame_indexes.remove(index)
+                
+                # Find the index of the maximum probability in the index window.
+                max_prob_index = np.argmax(labels[index_window])
+                max_prob = np.max(labels[index_window])
+                
+                # Map the index in the local range to the global index.
+                map_index = low_lim + max_prob_index
+                
+                # Check that the max probability locally and the one with
+                # the mapped index are identical.
+                assert max_prob, labels[map_index]
+                
+                frame_indexes.append(map_index)
 
-            # Remove
-            for index in index_window:
-                if index in frame_indices:
-                    frame_indices.remove(index)
+                i = map_index
 
-            # Find the index of the maximum probability in the index window.
-            max_prob_index = np.argmax(segmentation_probs[index_window])
-            max_prob = np.max(segmentation_probs[index_window])
+        return frame_indexes
+    
+    segments_frames = pick_frames(labels=segmentation_probs, h=min_segmentation_prob, w=window_size)
+    # 4. Turn frame indexes into percentages.
+    segments_percentages = np.array(segments_frames)/num_frames 
 
-            # Map the index in the local range to the global index.
-            label_index = low_lim + max_prob_index
-
-            # Check that the max probability locally and the one with
-            # the mapped index are identical.
-            assert max_prob, segmentation_probs[label_index]
-
-            frame_indices.append(label_index)
-
-    return frame_indices
+    return segmentation_probs, segments_percentages 
 
 
 async def run_inference(bone_vectors, spectrogram):
