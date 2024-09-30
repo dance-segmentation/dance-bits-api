@@ -313,7 +313,7 @@ def generate_normalized_mel_spectrogram(audio_path):
 
 
 def postprocess_predictions(segmentation_probs, num_frames, frames2beat, max_frames=5400,
-                             min_segmentation_prob=0.3, window_size=20, smoothing_factor=2):
+                             min_segmentation_prob=0.3, window_size=3, smoothing_factor=8):
     """
     Post-process the model predictions to get the segmented frames.
     Outputs the segmented frames given probabilities for each frame by finding the frame with the maximum probability
@@ -330,8 +330,16 @@ def postprocess_predictions(segmentation_probs, num_frames, frames2beat, max_fra
     segmentation_probs = segmentation_probs[:num_frames]
 
     # 1. Initialise parameters for establishing segments, ideally as buttons for the user.
-    window_size=int(frames2beat)*10
+    
+    # window_size is the multiple of frames in a beat, w is the window to search the peak for the segment.
+    w=frames2beat*window_size
+
+    # min_beats_segment is the minimum length of the segment, i.e. at least containing for example 4 beats.
+    min_beats_segment=4
+
+    # Set the probability threshold initially to the average of all probabilities.
     min_segmentation_prob=np.average(segmentation_probs)
+
 
     # 2. Apply smoothing as rolling average over frames2beat/factor last frames.
     def moving_average(data_set, periods=3):
@@ -364,7 +372,7 @@ def postprocess_predictions(segmentation_probs, num_frames, frames2beat, max_fra
                 # Create the index window for finding the probability maximum.
                 index_window = [index for index in list(range(low_lim,up_lim))]
                 
-                # Remove 
+                # Remove indexes in the current window such that a new max can be added in their place.
                 for index in index_window:
                     if index in frame_indexes:
                         frame_indexes.remove(index)
@@ -386,7 +394,32 @@ def postprocess_predictions(segmentation_probs, num_frames, frames2beat, max_fra
 
         return frame_indexes
     
-    segments_frames = pick_frames(labels=segmentation_probs, h=min_segmentation_prob, w=window_size)
+    # 4. Dynamically adjust parameters to the splitting formula based on the minimum allowed segment length.
+    def get_final_segments(labels, h, w, frames2beat, min_beats_segment):
+        """ 
+        Selects segments with the constraint of the minimal number of beats per segments.
+        """
+
+        # The maximum of nr frames is contrained by the min_beats_segment.
+        max_segments = int(len(labels) / int(min_beats_segment*frames2beat))
+
+        # If the chosen parameter w gives more frames than allowed
+        # slightly increase the window size until the condition holds.
+        for i in range(100):
+            frames = pick_frames(labels=labels, h=h, w=w)
+            if len(frames)>max_segments:
+                    w +=int(frames2beat/8)
+            else:
+                break  
+
+        return frames
+
+    # 5. Call the chain of segmentation functions with constraints.
+    segments_frames = get_final_segments(labels=segmentation_probs,
+                                          h=min_segmentation_prob, w=w, 
+                                          frames2beat=frames2beat,
+                                           min_beats_segment=min_beats_segment)
+    
     # 4. Turn frame indexes into percentages.
     segments_percentages = np.array(segments_frames)/num_frames 
 
